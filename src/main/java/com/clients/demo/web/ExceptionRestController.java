@@ -8,7 +8,6 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
 
 import javax.persistence.EntityNotFoundException;
 
-//TODO: Check
 @RestControllerAdvice
 public class ExceptionRestController {
     @ExceptionHandler(EntityNotFoundException.class)

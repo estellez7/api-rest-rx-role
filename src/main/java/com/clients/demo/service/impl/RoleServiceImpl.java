@@ -7,32 +7,34 @@ import com.clients.demo.model.entity.ClientEntity;
 import com.clients.demo.model.entity.ClientRoleEntity;
 import com.clients.demo.model.entity.ERole;
 import com.clients.demo.model.entity.RoleEntity;
-import com.clients.demo.model.repository.ClientRepository;
 import com.clients.demo.model.repository.ClientRoleRepository;
 import com.clients.demo.model.repository.RoleRepository;
+import com.clients.demo.retrofit.rx.RxService;
 import com.clients.demo.service.RoleService;
 import io.reactivex.Completable;
 import io.reactivex.Single;
 import lombok.AllArgsConstructor;
-import org.springframework.beans.BeanUtils;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import javax.persistence.EntityNotFoundException;
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 import java.util.stream.Collectors;
+
+import static java.util.stream.Collectors.toList;
 
 @AllArgsConstructor
 @Service
-//TODO: Methods Reactive
+//TODO: Reactive Methods
 public class RoleServiceImpl implements RoleService {
-
-    private final ClientRepository clientRepository;
 
     private final ClientRoleRepository clientRoleRepository;
 
     private final RoleRepository roleRepository;
+
+    private final RxService rxService;
 
     @Transactional
     @Override
@@ -41,21 +43,35 @@ public class RoleServiceImpl implements RoleService {
                 .map(this::toClientResponse);
     }
 
-    //TODO: Check
     private Single<ClientEntity> saveClientRoleToRepository(ClientRoleDTO clientRoleDTO) {
-        return Single.create(singleSubscriber -> {
-            Optional<ClientEntity> optionalAuthor = clientRepository.findById(clientRoleDTO.getClientId());
-            if (!optionalAuthor.isPresent())
-                singleSubscriber.onError(new EntityNotFoundException());
-            else {
-                RoleEntity roleEntity = roleRepository.save(RoleEntity.builder()
-                        .name(ERole.valueOf(clientRoleDTO.getNewRole()))
-                        .build());
-                clientRoleRepository.save(toClientRoleUpdate(
-                        ClientRoleEntity.builder().build(), clientRoleDTO, roleEntity.getId()));
-                singleSubscriber.onSuccess(clientRepository.findById(clientRoleDTO.getClientId()).get());
-            }
-        });
+        return rxService.findById(clientRoleDTO.getClientId())
+                .onErrorResumeNext(entityFounded -> Single.just(ClientEntity.builder().build()))
+                .map(clientEntity -> {
+                    if (clientEntity.getIdClient() != null) {
+                        Set<RoleEntity> roleExists = clientEntity.getRoles()
+                                .stream()
+                                .filter(role -> role.getName().name().equals(clientRoleDTO.getNewRole()))
+                                .collect(Collectors.toSet());
+                        if (roleExists.isEmpty()) {
+                            RoleEntity roleEntity = roleRepository.save(RoleEntity.builder()
+                                    .name(ERole.valueOf(clientRoleDTO.getNewRole()))
+                                    .build());
+                            clientRoleRepository.save(toClientRoleUpdate(
+                                    ClientRoleEntity.builder().build(), clientRoleDTO, roleEntity.getId()));
+
+                            return getEntityWithPartialRole(clientEntity, clientRoleDTO);
+                        }
+                        return clientEntity;
+                    }
+                    throw new EntityNotFoundException();
+                });
+    }
+
+    private ClientEntity getEntityWithPartialRole(ClientEntity clientEntity, ClientRoleDTO clientRoleDTO) {
+        clientEntity.getRoles().add(RoleEntity.builder()
+                .name(ERole.valueOf(clientRoleDTO.getNewRole()))
+                .build());
+        return clientEntity;
     }
 
     @Override
@@ -76,7 +92,7 @@ public class RoleServiceImpl implements RoleService {
         return roleList
                 .stream()
                 .map(this::toRoleResponse)
-                .collect(Collectors.toList());
+                .collect(toList());
     }
 
     private RoleDTO toRoleResponse(RoleEntity roleEntity) {
@@ -112,19 +128,32 @@ public class RoleServiceImpl implements RoleService {
     }
 
     private Single<ClientEntity> updateRoleToRepository(ClientRoleDTO clientRoleDTO) {
-        return Single.create(singleSubscriber -> {
-            ClientRoleEntity clientRole = clientRoleRepository
-                    .findByClientIdAndRoleId(clientRoleDTO.getClientId(), clientRoleDTO.getRoleId());
-            if (clientRole == null)
-                singleSubscriber.onError(new EntityNotFoundException());
-            else {
-                RoleEntity roleEntity = roleRepository.save(RoleEntity.builder()
-                        .name(ERole.valueOf(clientRoleDTO.getNewRole()))
-                        .build());
-                clientRoleRepository.save(toClientRoleUpdate(clientRole, clientRoleDTO, roleEntity.getId()));
-                singleSubscriber.onSuccess(clientRepository.findById(clientRole.getClientId()).get());
-            }
-        });
+        return rxService.findById(clientRoleDTO.getClientId())
+                .onErrorResumeNext(x -> Single.just(ClientEntity.builder().build()))
+                .map(clientEntity -> {
+                    if (clientEntity.getIdClient() != null) {
+                        ClientRoleEntity clientRole = clientRoleRepository
+                                .findByClientIdAndRoleId(clientRoleDTO.getClientId(), clientRoleDTO.getRoleId());
+                        if (clientRole == null) {
+                            throw new EntityNotFoundException();
+                        } else {
+                            delete(clientRoleDTO.getRoleId()).subscribe();
+                            RoleEntity roleEntity = roleRepository.save(RoleEntity.builder()
+                                    .name(ERole.valueOf(clientRoleDTO.getNewRole()))
+                                    .build());
+                            clientRoleRepository.save(toClientRoleUpdate(clientRole, clientRoleDTO, roleEntity.getId()));
+
+                            RoleEntity roleToRemove = clientEntity.getRoles()
+                                    .stream()
+                                    .filter(filterRole -> filterRole.getId().equals(clientRoleDTO.getRoleId()))
+                                    .findFirst().orElse(RoleEntity.builder().build());
+
+                            clientEntity.getRoles().remove(roleToRemove);
+                            return getEntityWithPartialRole(clientEntity, clientRoleDTO);
+                        }
+                    }
+                    throw new EntityNotFoundException();
+                });
     }
 
     private ClientRoleEntity toClientRoleUpdate(
@@ -137,9 +166,21 @@ public class RoleServiceImpl implements RoleService {
     }
 
     private ClientDTO toClientResponse(ClientEntity clientEntity) {
-        ClientDTO clientResponse = new ClientDTO();
-        BeanUtils.copyProperties(clientEntity, clientResponse);
-        return clientResponse;
+        Set<String> roles = clientEntity.getRoles()
+                .stream()
+                .map(role -> role.getName().name())
+                .collect(Collectors.toSet());
+
+        return ClientDTO.builder()
+                .idClient(clientEntity.getIdClient())
+                .name(clientEntity.getName())
+                .last_name(clientEntity.getLast_name())
+                .email(clientEntity.getEmail())
+                .date(clientEntity.getDate())
+                .username(clientEntity.getUsername())
+                .password(clientEntity.getPassword())
+                .roles(roles)
+                .build();
     }
 
     @Override
@@ -154,6 +195,7 @@ public class RoleServiceImpl implements RoleService {
                 completableSubscriber.onError(new EntityNotFoundException());
             else {
                 roleRepository.delete(optionalRole.get());
+                clientRoleRepository.deleteByRoleId(id);
                 completableSubscriber.onComplete();
             }
         });

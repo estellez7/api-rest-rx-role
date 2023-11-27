@@ -17,7 +17,6 @@ import java.util.List;
 @AllArgsConstructor
 @RestController
 @RequestMapping(value = "/api/v1")
-//TODO: Exceptions in methods
 public class RoleController {
 
     private final RoleService roleService;
